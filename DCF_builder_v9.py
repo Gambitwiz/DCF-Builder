@@ -69,6 +69,38 @@ def fetch_financial_data(ticker):
             "currentPrice": info.get("currentPrice", 0)
         }
 
+        # If currentPrice is 0, try other price fields
+        if data["currentPrice"] == 0:
+            data["currentPrice"] = info.get("regularMarketPrice", 0)
+        if data["currentPrice"] == 0:
+            data["currentPrice"] = info.get("bid", 0)
+        if data["currentPrice"] == 0:
+            data["currentPrice"] = info.get("ask", 0)
+
+        if data["currentPrice"] != 0:
+            print(f"Using fetched price for {ticker}: {data['currentPrice']}")
+        else:
+            print(f"Warning: No valid share price found in info for {ticker}. Defaulting to 0.")
+
+        # Try to get totalRevenue and ebitda from income statement if not found in info
+        income_stmt = stock.income_stmt
+        if not income_stmt.empty:
+            if data["totalRevenue"] == 0:
+                if "Total Revenue" in income_stmt.index:
+                    data["totalRevenue"] = income_stmt.loc["Total Revenue"].iloc[0]
+                elif "Revenue" in income_stmt.index:
+                    data["totalRevenue"] = income_stmt.loc["Revenue"].iloc[0]
+                else:
+                    print(f"Warning: No 'Total Revenue' or 'Revenue' found in income statement for {ticker}")
+
+            if data["ebitda"] == 0:
+                if "EBITDA" in income_stmt.index:
+                    data["ebitda"] = income_stmt.loc["EBITDA"].iloc[0]
+                else:
+                    print(f"Warning: No 'EBITDA' found in income statement for {ticker}")
+        else:
+            print(f"Warning: Income statement empty for {ticker}")
+
         # Depreciation & Amortization
         if not cashflow.empty:
             if "Depreciation And Amortization" in cashflow.index:
@@ -382,70 +414,74 @@ def update_excel_template(template_filename, updated_filename, financial_data, p
 
 def main():
     parser = argparse.ArgumentParser(description="DCF Analysis Tool with ML Projections")
-    parser.add_argument("ticker", nargs="?", default=None, help="Stock ticker (e.g., PLTR), prompted if not provided")
+    parser.add_argument("--tickers", type=str, default=None, help="Comma-separated stock tickers (e.g., PLTR,MSFT)")
     parser.add_argument("--years", type=int, default=5, help="Number of forecast years (default: 5)")
     parser.add_argument("--growth", type=float, default=0.05, help="Default growth rate if insufficient data (default: 0.05)")
     args = parser.parse_args()
 
-    ticker = args.ticker
-    if not ticker:
-        ticker = input("Enter stock ticker (e.g., PLTR): ").strip().upper()
-    if not ticker:
-        print("Ticker cannot be empty.")
+    tickers_input = args.tickers
+    if not tickers_input:
+        tickers_input = input("Enter stock ticker(s) separated by commas (e.g., PLTR, MSFT): ").strip().upper()
+
+    if not tickers_input:
+        print("Ticker(s) cannot be empty.")
         sys.exit(1)
+
+    tickers = [t.strip() for t in tickers_input.split(',') if t.strip()]
 
     forecast_years = args.years
     default_growth = args.growth
 
-    # Use relative path for template file
-    template_filename = "Edit-DCFtemplate.xlsx"
+    template_filename = r"C:\Users\micha\OneDrive\Desktop\Claude Build\Exceldcf\Edit-DCFtemplate.xlsx"
     if not os.path.exists(template_filename):
-        print(f"Error: Template file '{template_filename}' not found.")
-        print("Please ensure the Excel template file is in the same directory as this script.")
+        print(f"File '{template_filename}' does not exist.")
         sys.exit(1)
 
-    updated_filename = get_unique_filename(ticker, ".xlsx")
-    pdf_filename = get_unique_filename(ticker, "_report.pdf")
+    for ticker in tickers:
+        print(f"\n--- Processing {ticker} ---")
 
-    print(f"Fetching current data for {ticker}...")
-    financial_data = fetch_financial_data(ticker)
+        updated_filename = get_unique_filename(ticker, ".xlsx")
+        pdf_filename = get_unique_filename(ticker, "_report.pdf")
 
-    print(f"Fetching historical data for {ticker}...")
-    historical_data = fetch_historical_financial_data(ticker)
+        print(f"Fetching current data for {ticker}...")
+        financial_data = fetch_financial_data(ticker)
 
-    print("Calculating ML-based growth projections...")
-    projections = calculate_growth_projections(historical_data, financial_data, ticker, forecast_years, default_growth)
+        print(f"Fetching historical data for {ticker}...")
+        historical_data = fetch_historical_financial_data(ticker)
 
-    mapping = {
-        "C1": "companyName",
-        "D7": "totalRevenue",
-        "D8": "ebitda",
-        "D9": "depreciation & amortization",
-        "D10": "capitalExpenditures",
-        "D11": "workingCapital",
-        "C9": "Depreciation and Amortization",
-        "C29": "Depreciation and Amortization",
-        "C39": "Depreciation and Amortization",
-        "D5": datetime.now().strftime("%m/%d/%Y"),
-        "H1": "Discounted Cash Flow Valuation"
-    }
-    date_mapping = {chr(70 + i) + "23": f"12/31/{2024 + i}" for i in range(forecast_years)}
-    mapping.update(date_mapping)
+        print("Calculating ML-based growth projections...")
+        projections = calculate_growth_projections(historical_data, financial_data, ticker, forecast_years, default_growth)
 
-    print("Updating Excel template with projections...")
-    update_excel_template(template_filename, updated_filename, financial_data, projections, historical_data, mapping)
+        mapping = {
+            "C1": "companyName",
+            "D7": "totalRevenue",
+            "D8": "ebitda",
+            "D9": "depreciation & amortization",
+            "D10": "capitalExpenditures",
+            "D11": "workingCapital",
+            "C9": "Depreciation and Amortization",
+            "C29": "Depreciation and Amortization",
+            "C39": "Depreciation and Amortization",
+            "D5": datetime.now().strftime("%m/%d/%Y"),
+            "H1": "Discounted Cash Flow Valuation"
+        }
+        date_mapping = {chr(70 + i) + "23": f"12/31/{2024 + i}" for i in range(forecast_years)}
+        mapping.update(date_mapping)
 
-    try:
-        if sys.platform == 'win32':
-            os.startfile(updated_filename)
-        elif sys.platform == 'darwin':
-            subprocess.run(['open', updated_filename])
-        elif sys.platform.startswith('linux'):
-            subprocess.run(['xdg-open', updated_filename])
-        else:
-            print(f"Unsupported platform: {sys.platform}. Please open {updated_filename} manually.")
-    except Exception as e:
-        print(f"Error opening file: {e}")
+        print("Updating Excel template with projections...")
+        update_excel_template(template_filename, updated_filename, financial_data, projections, historical_data, mapping)
+
+        try:
+            if sys.platform == 'win32':
+                os.startfile(updated_filename)
+            elif sys.platform == 'darwin':
+                subprocess.run(['open', updated_filename])
+            elif sys.platform.startswith('linux'):
+                subprocess.run(['xdg-open', updated_filename])
+            else:
+                print(f"Unsupported platform: {sys.platform}. Please open {updated_filename} manually.")
+        except Exception as e:
+            print(f"Error opening file: {e}")
 
 if __name__ == "__main__":
     main()
